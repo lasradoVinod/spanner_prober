@@ -8,21 +8,20 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
-	cppb "github.com/cloudprober/cloudprober/probes/external/proto"
+	//cppb "github.com/cloudprober/cloudprober/probes/external/proto"
 
-	"github.com/cloudprober/cloudprober/probes/external/serverutils"
+	//"github.com/cloudprober/cloudprober/probes/external/serverutils"
 	log "github.com/golang/glog"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-
-	"google.golang.org/protobuf/proto"
 
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -30,6 +29,9 @@ import (
 
 	"google.golang.org/grpc"
 
+	"go.opencensus.io/stats"
+	"go.opencensus.io/stats/view"
+	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
 
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
@@ -58,6 +60,35 @@ var (
 		return payload, h.Sum(nil), nil
 	}
 	rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	tagHostname = tag.MustNewKey("hostname")
+
+	prefix = "spanner_prober/"
+	// RunLatency is a measure percieved latency by user.
+	rpcLatency = stats.Int64(
+		prefix+"run_latency",
+		"Latency for each call",
+		stats.UnitMilliseconds,
+	)
+	// RunLatencyView is a view of the last value of RunLatency.
+	rpcLatencyView = &view.View{
+		Measure:     rpcLatency,
+		Aggregation: view.LastValue(),
+		TagKeys:     []tag.Key{tagHostname},
+	}
+
+	rpcErrors = stats.Int64(
+		prefix+"open_session_count",
+		"Count of RPCErrors",
+		stats.UnitDimensionless,
+	)
+
+	// RPCErrorsView is a view of the count of RPCErrors.
+	rpcErrorsView = &view.View{
+		Measure:     rpcErrors,
+		Aggregation: view.Count(),
+		TagKeys:     []tag.Key{tagHostname},
+	}
 )
 
 // Options holds the settings required for creating a prober.
@@ -177,22 +208,25 @@ func (opt *ProberOptions) databaseName() string {
 	return opt.Database
 }
 
+func registerStats() {
+	view.Register(rpcLatencyView, rpcErrorsView)
+}
+
 // New initializes Cloud Spanner clients, setup up the database, and return a new CSProber.
 func NewProber(ctx context.Context, opt ProberOptions, clientOpts ...option.ClientOption) (*Prober, error) {
 	// Override Cloud Spanner endpoint if specified.
 	if opt.Endpoint != "" {
 		clientOpts = append(clientOpts, option.WithEndpoint(opt.Endpoint))
 	}
-	// TODO(b/168615976): remove this when we can disable DirectPath using GOOGLE_CLOUD_DISABLE_DIRECT_PATH env var
 	clientOpts = append(clientOpts, internaloption.EnableDirectPath(false))
 	p, err := newCloudProber(ctx, opt, clientOpts...)
 	if err != nil {
 		return nil, err
 	}
 
-	// This goroutine is run indefinitely to match the lifetime of the prober framework.
-	// It will also return when p.opsChannel is closed, which the user cannot do.
 	go p.backgroundStatsAggregator()
+
+	registerStats()
 	return p, nil
 }
 
@@ -222,19 +256,7 @@ func newCloudProber(ctx context.Context, opt ProberOptions, clientOpts ...option
 		return nil, err
 	}
 
-	isProbeTarget := checkCandidateForProbe(opt.gceZone(), instanceConfig.GetReplicas())
-
-	proberQPS := 0.0
-	if !isProbeTarget {
-		// add overrides
-		opt.QPS = 0
-		opt.QPSPerInstanceConfig = 0
-		// Add minimal qps. We will exclude this in metric.
-		proberQPS = 0.00001
-		opt.Database = "non-relevant"
-	} else {
-		proberQPS = qpsPerProber(opt.QPS, opt.QPSPerInstanceConfig, instanceConfig.GetReplicas())
-	}
+	proberQPS := qpsPerProber(opt.QPS, opt.QPSPerInstanceConfig, instanceConfig.GetReplicas())
 
 	if err := createCloudSpannerInstanceIfMissing(ctx, instanceClient, opt); err != nil {
 		return nil, err
@@ -318,14 +340,6 @@ func backoff(baseDelay, maxDelay time.Duration, retries int) time.Duration {
 	}
 	if backoff > max {
 		backoff = max
-	}
-
-	// Randomize backoff delays so that if a cluster of requests start at
-	// the same time, they won't operate in lockstep.  We just subtract up
-	// to 40% so that we obey maxDelay.
-	backoff -= backoff * 0.4 * rng.Float64()
-	if time.Duration(backoff) < baseDelay {
-		return baseDelay
 	}
 	return time.Duration(backoff)
 }
@@ -459,12 +473,25 @@ func dropCloudSpannerDatabase(ctx context.Context, databaseClient *database.Data
 
 // backgroundStatsAggregator pulls stats from the prober channel, and places them in a slice.
 // This avoids the case in which probes are blocked due to the channel being full.
-func (p *Prober) backgroundStatsAggregator() {
-	for op := range p.opsChannel {
-		p.mu.Lock()
-		p.ops = append(p.ops, op)
-		p.mu.Unlock()
+func (p *Prober) backgroundStatsAggregator() error {
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "generic"
 	}
+	ctxProber, err := tag.New(context.Background(),
+		tag.Upsert(tagHostname, hostname))
+	if err != nil {
+		return err
+	}
+
+	for op := range p.opsChannel {
+		if op.Error != nil {
+			stats.Record(ctxProber, rpcErrors.M(1))
+		}
+		stats.Record(ctxProber, rpcLatency.M(op.Latency.Milliseconds()))
+	}
+
+	return nil
 }
 
 func (p *Prober) probeInterval() time.Duration {
@@ -519,39 +546,6 @@ func (p *Prober) runProbe(ctx context.Context) {
 		Latency: latency,
 		Error:   rpcErr,
 	}
-}
-
-// probeStats return a cloudprober playload with the latencies, error count, and op count since the last call.
-func (p *Prober) probeStats() string {
-	p.mu.Lock()
-	ops := p.ops
-	p.ops = nil
-	p.mu.Unlock()
-
-	var latencyStrs []string
-	errorCount := 0
-	opCount := len(ops)
-	for _, op := range ops {
-		millis := float64(op.Latency.Nanoseconds()) / float64(time.Millisecond.Nanoseconds())
-		latencyStrs = append(latencyStrs, fmt.Sprintf("%.3f", millis))
-
-		if op.Error != nil {
-			errorCount++
-		}
-	}
-
-	var payload strings.Builder
-	fmt.Fprintf(&payload, "latencies %s\n", strings.Join(latencyStrs, ","))
-	fmt.Fprintf(&payload, "op_count %d\n", opCount)
-	fmt.Fprintf(&payload, "error_count %d\n", errorCount)
-	return payload.String()
-}
-
-// Serve runs serverutils.Server to expose the results of probes via Cloud Prober.
-func (p *Prober) Serve() {
-	serverutils.Serve(func(req *cppb.ProbeRequest, reply *cppb.ProbeReply) {
-		reply.Payload = proto.String(p.probeStats())
-	})
 }
 
 // validateRows checks that the read did not return an error, and if the row is

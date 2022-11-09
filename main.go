@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/signal"
 	"regexp"
+	"syscall"
 	"time"
 
 	"flag"
 	proberlib "spanner_prober/prober"
 
 	"cloud.google.com/go/spanner"
+	"contrib.go.opencensus.io/exporter/stackdriver"
+	"go.opencensus.io/trace"
 	"google.golang.org/grpc/grpclog"
 
 	log "github.com/golang/glog"
@@ -72,47 +76,47 @@ func main() {
 		ProcessingUnits:      *processingUnits,
 	}
 
-	//if *grpcLogging {
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, /* Discard logs at INFO level */
 		os.Stderr, os.Stderr))
-	//}
 
 	// Enable all default views for Cloud Spanner
 	if err := spanner.EnableStatViews(); err != nil {
 		log.Errorf("Failed to export stats view: %v", err)
 	}
 
-	// if *enableStackDriverIntegration {
-	// 	// Set up the stackdriver exporter for sending metrics, views and traces
-	// 	sd, err := stackdriver.NewExporter(stackdriver.Options{
-	// 		ProjectID: *project,
-	// 		// Wait unil threshold to batch the trace spans
-	// 		BundleDelayThreshold: 60 * time.Second,
-	// 		// Buffer until 3000 trace spans
-	// 		BundleCountThreshold: 3000,
-	// 		MonitoredResource:    monitoredresource.Autodetect(),
-	// 		// TODO(b/172067756) Add env prefix for metricprefix
-	// 		MetricPrefix: "gce_prober",
-	// 	})
-
-	// 	if err != nil {
-	// 		log.Fatalf("Failed to create the StackDriver exporter: %v", err)
-	// 	}
-	// 	defer sd.Flush()
-	// 	sd.StartMetricsExporter()
-	// 	defer sd.StopMetricsExporter()
-
-	// 	// Trace exporter setup
-	// 	trace.RegisterExporter(sd)
-	// 	trace.ApplyConfig(trace.Config{DefaultSampler: trace.ProbabilitySampler(*traceFraction)})
-	// }
-
 	p, err := proberlib.NewProber(ctx, opts)
 	if err != nil {
 		log.Exitf("Failed to initialize the cloud prober, %v", err)
 	}
 	p.Start(ctx)
-	p.Serve()
+
+	if *enableStackDriverIntegration {
+		// Set up the stackdriver exporter for sending metrics, views and traces
+		sd, err := stackdriver.NewExporter(stackdriver.Options{
+			ProjectID:            *project,
+			BundleDelayThreshold: 60 * time.Second,
+			BundleCountThreshold: 3000,
+			MetricPrefix:         "spanner_prober",
+		})
+
+		if err != nil {
+			log.Fatalf("Failed to create the StackDriver exporter: %v", err)
+		}
+		defer sd.Flush()
+		sd.StartMetricsExporter()
+		defer sd.StopMetricsExporter()
+
+		// Trace exporter setup
+		trace.RegisterExporter(sd)
+		trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
+	}
+
+	cancelChan := make(chan os.Signal, 1)
+	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case <-cancelChan:
+	}
 }
 
 func parseProbeType(t string) (proberlib.Probe, error) {
