@@ -9,18 +9,12 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"reflect"
-	"strings"
 	"sync"
 	"time"
 
-	//cppb "github.com/cloudprober/cloudprober/probes/external/proto"
-
-	//"github.com/cloudprober/cloudprober/probes/external/serverutils"
 	log "github.com/golang/glog"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"google.golang.org/api/iterator"
@@ -32,7 +26,6 @@ import (
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
-	"go.opencensus.io/trace"
 
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
 	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
@@ -178,12 +171,6 @@ func (opt *ProberOptions) instanceName() string {
 	return opt.Instance
 }
 
-// gceZone returns the zone where prober will run
-// E.g. us-central1-b
-func (opt *ProberOptions) gceZone() string {
-	return opt.GCEZone
-}
-
 // instanceConfigURI returns an instance config URI of the form: projects/{project}/instanceConfigs/{instance config name}.
 // E.g. projects/test-project/instanceConfigss/regional-test.
 func (opt *ProberOptions) instanceConfigURI() string {
@@ -208,7 +195,7 @@ func (opt *ProberOptions) databaseName() string {
 	return opt.Database
 }
 
-func registerStats() {
+func init() {
 	view.Register(rpcLatencyView, rpcErrorsView)
 }
 
@@ -219,18 +206,17 @@ func NewProber(ctx context.Context, opt ProberOptions, clientOpts ...option.Clie
 		clientOpts = append(clientOpts, option.WithEndpoint(opt.Endpoint))
 	}
 	clientOpts = append(clientOpts, internaloption.EnableDirectPath(false))
-	p, err := newCloudProber(ctx, opt, clientOpts...)
+	p, err := newSpannerProber(ctx, opt, clientOpts...)
 	if err != nil {
 		return nil, err
 	}
 
 	go p.backgroundStatsAggregator()
 
-	registerStats()
 	return p, nil
 }
 
-func newCloudProber(ctx context.Context, opt ProberOptions, clientOpts ...option.ClientOption) (*Prober, error) {
+func newSpannerProber(ctx context.Context, opt ProberOptions, clientOpts ...option.ClientOption) (*Prober, error) {
 	if opt.NumRows <= 0 {
 		return nil, fmt.Errorf("NumRows must be at least 1, got %v", opt.NumRows)
 	}
@@ -271,9 +257,6 @@ func newCloudProber(ctx context.Context, opt ProberOptions, clientOpts ...option
 		return nil, err
 	}
 
-	clientOpts = append(clientOpts, option.WithGRPCDialOption(grpc.WithUnaryInterceptor(AddUnaryPeerInterceptor())),
-		option.WithGRPCDialOption(grpc.WithStreamInterceptor(AddStreamPeerInterceptor())))
-	// TODO(b/180957755) Surface t4t7 latency as a metric
 	clientOpts = append(clientOpts, option.WithGRPCDialOption(grpc.WithUnaryInterceptor(AddGFELatencyUnaryInterceptor)),
 		option.WithGRPCDialOption(grpc.WithStreamInterceptor(AddGFELatencyStreamingInterceptor)))
 	dataClient, err := spanner.NewClient(ctx, opt.databaseURI(), clientOpts...)
@@ -297,21 +280,7 @@ func newCloudProber(ctx context.Context, opt ProberOptions, clientOpts ...option
 		clientOpts:          clientOpts,
 	}
 
-	//p.deniedPeerRanges = directPathPeerRanges
-
 	return p, nil
-}
-
-// checkCandidateForProbe checks whether the gceZone is candidate for probing for that instance config
-func checkCandidateForProbe(gceZone string, instanceConfigReplicas []*instancepb.ReplicaInfo) bool {
-	// prober colocation with replica and replica not in witness
-	for _, replicaInfo := range instanceConfigReplicas {
-		if replicaInfo.GetType() != instancepb.ReplicaInfo_WITNESS && strings.HasPrefix(gceZone, replicaInfo.GetLocation()) {
-			return true
-		}
-	}
-	return false
-
 }
 
 // qpsPerProber calculates the qps that each individual prober should be probing at.
@@ -352,10 +321,6 @@ func createCloudSpannerInstanceIfMissing(ctx context.Context, instanceClient *in
 	if checkInstancePresence(ctx, instanceClient, opt) {
 		return nil
 	}
-	ctx, span := trace.StartSpan(ctx, "CreateInstance")
-	span.AddAttributes(trace.StringAttribute("Instance", opt.instanceName()))
-	span.AddAttributes(trace.StringAttribute("InstanceConfig", opt.instanceConfigURI()))
-	defer span.End()
 
 	op, err := instanceClient.CreateInstance(ctx, &instancepb.CreateInstanceRequest{
 		Parent:     opt.projectURI(),
@@ -399,11 +364,6 @@ func createCloudSpannerInstanceIfMissing(ctx context.Context, instanceClient *in
 
 // checkInstancePresence checks whether the instance is already created.
 func checkInstancePresence(ctx context.Context, instanceClient *instance.InstanceAdminClient, opt ProberOptions) bool {
-	ctx, span := trace.StartSpan(ctx, "cloudprober:CheckInstancePresence")
-	span.AddAttributes(trace.StringAttribute("Instance", opt.instanceName()))
-	span.AddAttributes(trace.StringAttribute("InstanceConfig", opt.instanceConfigURI()))
-	defer span.End()
-
 	resp, err := instanceClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
 		Name: opt.instanceURI(),
 	})
@@ -416,11 +376,6 @@ func checkInstancePresence(ctx context.Context, instanceClient *instance.Instanc
 
 // deleteCloudSpannerInstance deletes the instance present in ProberOptions.
 func deleteCloudSpannerInstance(ctx context.Context, instanceClient *instance.InstanceAdminClient, opt ProberOptions) error {
-	ctx, span := trace.StartSpan(ctx, "DeleteInstance")
-	span.AddAttributes(trace.StringAttribute("Instance", opt.instanceName()))
-	span.AddAttributes(trace.StringAttribute("InstanceConfig", opt.instanceConfigURI()))
-	defer span.End()
-
 	err := instanceClient.DeleteInstance(ctx, &instancepb.DeleteInstanceRequest{
 		Name: opt.instanceURI(),
 	})
@@ -432,11 +387,6 @@ func deleteCloudSpannerInstance(ctx context.Context, instanceClient *instance.In
 // Databases are shared across multiple prober tasks running in differenct GCE VMs.
 // Databases do not get cleaned up in this prober, as we do not support turning down Cloud Spanner regions.
 func createCloudSpannerDatabase(ctx context.Context, databaseClient *database.DatabaseAdminClient, opt ProberOptions) error {
-	ctx, span := trace.StartSpan(ctx, "CreateDatabase")
-	span.AddAttributes(trace.StringAttribute("Database", opt.databaseName()))
-	span.AddAttributes(trace.StringAttribute("Instance", opt.instanceName()))
-	defer span.End()
-
 	op, err := databaseClient.CreateDatabase(ctx, &dbadminpb.CreateDatabaseRequest{
 		Parent:          opt.instanceURI(),
 		CreateStatement: fmt.Sprintf("CREATE DATABASE `%v`", opt.databaseName()),
@@ -462,11 +412,6 @@ func createCloudSpannerDatabase(ctx context.Context, databaseClient *database.Da
 
 // dropCloudSpannerDatabase deops the database mentioned in ProberOptions.
 func dropCloudSpannerDatabase(ctx context.Context, databaseClient *database.DatabaseAdminClient, opt ProberOptions) error {
-	ctx, span := trace.StartSpan(ctx, "DropDatabase")
-	span.AddAttributes(trace.StringAttribute("Database", opt.databaseName()))
-	span.AddAttributes(trace.StringAttribute("Instance", opt.instanceName()))
-	defer span.End()
-
 	err := databaseClient.DropDatabase(ctx, &dbadminpb.DropDatabaseRequest{Database: opt.databaseURI()})
 	return err
 }
@@ -527,20 +472,9 @@ func (p *Prober) Start(ctx context.Context) {
 }
 
 func (p *Prober) runProbe(ctx context.Context) {
-	peer := &peer.Peer{}
-	ctx = context.WithValue(ctx, PeerKey{}, peer)
 	startTime := time.Now()
-	ctx, span := trace.StartSpan(ctx, reflect.TypeOf(p.prober).Name())
-	defer span.End()
-	// TODO(b/176558334): Add additional probes (and corresponding abstractions).
 	rpcErr := p.prober.probe(ctx, p)
 	latency := time.Now().Sub(startTime)
-
-	if rpcErr != nil {
-		span.SetStatus(trace.Status{Code: trace.StatusCodeInternal, Message: rpcErr.Error()})
-	} else {
-		span.SetStatus(trace.Status{Code: trace.StatusCodeOK})
-	}
 
 	p.opsChannel <- op{
 		Latency: latency,

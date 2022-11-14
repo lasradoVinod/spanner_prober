@@ -15,7 +15,6 @@ import (
 
 	"cloud.google.com/go/spanner"
 	"contrib.go.opencensus.io/exporter/stackdriver"
-	"go.opencensus.io/trace"
 	"google.golang.org/grpc/grpclog"
 
 	log "github.com/golang/glog"
@@ -40,9 +39,7 @@ var (
 )
 
 func main() {
-	fmt.Println(os.Args)
 	flag.Parse()
-	fmt.Println(*project)
 	ctx := context.Background()
 
 	errs := validateFlags()
@@ -105,10 +102,6 @@ func main() {
 		defer sd.Flush()
 		sd.StartMetricsExporter()
 		defer sd.StopMetricsExporter()
-
-		// Trace exporter setup
-		trace.RegisterExporter(sd)
-		trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
 	}
 
 	cancelChan := make(chan os.Signal, 1)
