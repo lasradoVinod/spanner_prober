@@ -1,6 +1,6 @@
 module spanner_prober
 
-go 1.20
+go 1.17
 
 require (
 	cloud.google.com/go/spanner v1.40.0
