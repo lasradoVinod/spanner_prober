@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -11,17 +12,15 @@ import (
 	"syscall"
 	"time"
 
-	"flag"
 	proberlib "spanner_prober/prober"
 
 	"cloud.google.com/go/spanner"
 	"contrib.go.opencensus.io/exporter/stackdriver"
 	"contrib.go.opencensus.io/exporter/stackdriver/monitoredresource"
+	log "github.com/golang/glog"
 	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/stats/view"
 	"google.golang.org/grpc/grpclog"
-
-	log "github.com/golang/glog"
 )
 
 var (
@@ -40,6 +39,7 @@ var (
 	payloadSize                  = flag.Int("payload_size", 1024, "Size of payload to write to the probe database")
 	probeDeadline                = flag.Duration("probe_deadline", 60*time.Second, "Deadline for probe request")
 	endpoint                     = flag.String("endpoint", "", "Cloud Spanner Endpoint to send request to")
+	// globalResource               = flag.Bool("glabal_resource", true, "")
 )
 
 func main() {
@@ -55,41 +55,8 @@ func main() {
 		log.Exit("Flag validation failed... exiting.")
 	}
 
-	prober, err := parseProbeType(*probeType)
-	if err != nil {
-		log.Exitf("Could not create prober due to %v.", err)
-	}
-
-	opts := proberlib.ProberOptions{
-		Project:              *project,
-		Instance:             *instance_name,
-		Database:             *database_name,
-		InstanceConfig:       *instanceConfig,
-		QPS:                  *qps,
-		QPSPerInstanceConfig: *qpsPerInstanceConfig,
-		NumRows:              *numRows,
-		Prober:               prober,
-		MaxStaleness:         *maxStaleness,
-		PayloadSize:          *payloadSize,
-		ProbeDeadline:        *probeDeadline,
-		Endpoint:             *endpoint,
-		NodeCount:            *nodeCount,
-		ProcessingUnits:      *processingUnits,
-	}
-
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, /* Discard logs at INFO level */
 		os.Stderr, os.Stderr))
-
-	// Enable all default views for Cloud Spanner
-	if err := spanner.EnableStatViews(); err != nil {
-		log.Errorf("Failed to export stats view: %v", err)
-	}
-
-	p, err := proberlib.NewProber(ctx, opts)
-	if err != nil {
-		log.Exitf("Failed to initialize the cloud prober, %v", err)
-	}
-	p.Start(ctx)
 
 	if *enableStackDriverIntegration {
 		// Set up the stackdriver exporter for sending metrics, views and traces
@@ -97,6 +64,11 @@ func main() {
 		// Register gRPC views.
 		if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
 			log.Fatalf("Failed to register ocgrpc client views: %v", err)
+		}
+
+		// Enable all default views for Cloud Spanner
+		if err := spanner.EnableStatViews(); err != nil {
+			log.Errorf("Failed to export stats view: %v", err)
 		}
 
 		getPrefix := func(name string) string {
@@ -120,6 +92,34 @@ func main() {
 		sd.StartMetricsExporter()
 		defer sd.StopMetricsExporter()
 	}
+
+	prober, err := proberlib.ParseProbeType(*probeType)
+	if err != nil {
+		log.Exitf("Could not create prober due to %v.", err)
+	}
+
+	opts := proberlib.ProberOptions{
+		Project:              *project,
+		Instance:             *instance_name,
+		Database:             *database_name,
+		InstanceConfig:       *instanceConfig,
+		QPS:                  *qps,
+		QPSPerInstanceConfig: *qpsPerInstanceConfig,
+		NumRows:              *numRows,
+		Prober:               prober,
+		MaxStaleness:         *maxStaleness,
+		PayloadSize:          *payloadSize,
+		ProbeDeadline:        *probeDeadline,
+		Endpoint:             *endpoint,
+		NodeCount:            *nodeCount,
+		ProcessingUnits:      *processingUnits,
+	}
+
+	p, err := proberlib.NewProber(ctx, opts)
+	if err != nil {
+		log.Exitf("Failed to initialize the cloud prober, %v", err)
+	}
+	p.Start(ctx)
 
 	cancelChan := make(chan os.Signal, 1)
 	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
@@ -148,25 +148,6 @@ func (mr *MonitoredResource) MonitoredResource() (resType string, labels map[str
 		labels[k] = v
 	}
 	return
-}
-
-func parseProbeType(t string) (proberlib.Probe, error) {
-	switch t {
-	case "noop":
-		return proberlib.NoopProbe{}, nil
-	case "stale_read":
-		return proberlib.StaleReadProbe{}, nil
-	case "strong_query":
-		return proberlib.StrongQueryProbe{}, nil
-	case "stale_query":
-		return proberlib.StaleQueryProbe{}, nil
-	case "dml":
-		return proberlib.DMLProbe{}, nil
-	case "read_write":
-		return proberlib.ReadWriteProbe{}, nil
-	default:
-		return proberlib.NoopProbe{}, fmt.Errorf("probe_type was not a valid probe type, was %q", *probeType)
-	}
 }
 
 func validateFlags() []error {
@@ -221,7 +202,7 @@ func validateFlags() []error {
 		errs = append(errs, fmt.Errorf("instance_config did not match %v, was %v", instanceDBRegex, *instanceConfig))
 	}
 
-	if _, err := parseProbeType(*probeType); err != nil {
+	if _, err := proberlib.ParseProbeType(*probeType); err != nil {
 		errs = append(errs, err)
 	}
 

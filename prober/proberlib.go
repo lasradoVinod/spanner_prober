@@ -521,6 +521,25 @@ func validateRows(iter *spanner.RowIterator) (int, error) {
 	}
 }
 
+func ParseProbeType(t string) (Probe, error) {
+	switch t {
+	case "noop":
+		return NoopProbe{}, nil
+	case "stale_read":
+		return StaleReadProbe{}, nil
+	case "strong_query":
+		return StrongQueryProbe{}, nil
+	case "stale_query":
+		return StaleQueryProbe{}, nil
+	case "dml":
+		return DMLProbe{}, nil
+	case "read_write":
+		return ReadWriteProbe{}, nil
+	default:
+		return NoopProbe{}, fmt.Errorf("probe_type %q is not a valid probe type", t)
+	}
+}
+
 // NoopProbe is a fake prober which always succeeds.
 type NoopProbe struct{}
 
