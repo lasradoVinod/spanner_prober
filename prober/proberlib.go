@@ -56,6 +56,8 @@ var (
 
 	MetricPrefix = "grpc_gcp_spanner_prober/"
 
+	opNameTag = tag.MustNewKey("op_name")
+
 	resultTag   = tag.MustNewKey("result")
 	withError   = tag.Insert(resultTag, "error")
 	withSuccess = tag.Insert(resultTag, "success")
@@ -71,7 +73,7 @@ var (
 		Name:        MetricPrefix + opLatency.Name(),
 		Measure:     opLatency,
 		Aggregation: view.Distribution(expDistribution...),
-		TagKeys:     []tag.Key{resultTag},
+		TagKeys:     []tag.Key{resultTag, opNameTag},
 	}
 
 	opResults = stats.Int64(
@@ -84,7 +86,7 @@ var (
 		Name:        MetricPrefix + opResults.Name(),
 		Measure:     opResults,
 		Aggregation: view.Count(),
-		TagKeys:     []tag.Key{resultTag},
+		TagKeys:     []tag.Key{resultTag, opNameTag},
 	}
 )
 
@@ -205,6 +207,10 @@ func init() {
 
 // New initializes Cloud Spanner clients, setup up the database, and return a new CSProber.
 func NewProber(ctx context.Context, opt ProberOptions, clientOpts ...option.ClientOption) (*Prober, error) {
+	ctx, err := tag.New(ctx, tag.Insert(opNameTag, opt.Prober.name()))
+	if err != nil {
+		return nil, err
+	}
 	// Override Cloud Spanner endpoint if specified.
 	if opt.Endpoint != "" {
 		clientOpts = append(clientOpts, option.WithEndpoint(opt.Endpoint))
@@ -215,7 +221,7 @@ func NewProber(ctx context.Context, opt ProberOptions, clientOpts ...option.Clie
 		return nil, err
 	}
 
-	go p.backgroundStatsAggregator()
+	go p.backgroundStatsAggregator(ctx)
 
 	return p, nil
 }
@@ -426,14 +432,14 @@ func dropCloudSpannerDatabase(ctx context.Context, databaseClient *database.Data
 
 // backgroundStatsAggregator pulls stats from the prober channel.
 // This avoids the case in which probes are blocked due to the channel being full.
-func (p *Prober) backgroundStatsAggregator() error {
+func (p *Prober) backgroundStatsAggregator(ctx context.Context) error {
 	for op := range p.opsChannel {
 		mutator := withSuccess
 		if op.Error != nil {
 			mutator = withError
 		}
-		stats.RecordWithTags(context.Background(), []tag.Mutator{mutator}, opResults.M(1))
-		stats.RecordWithTags(context.Background(), []tag.Mutator{mutator}, opLatency.M(op.Latency.Milliseconds()))
+		stats.RecordWithTags(ctx, []tag.Mutator{mutator}, opResults.M(1))
+		stats.RecordWithTags(ctx, []tag.Mutator{mutator}, opLatency.M(op.Latency.Milliseconds()))
 	}
 
 	return nil

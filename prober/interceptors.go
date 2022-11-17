@@ -12,6 +12,7 @@ import (
 
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
+	"go.opencensus.io/tag"
 
 	"google.golang.org/grpc"
 )
@@ -33,6 +34,7 @@ var (
 		Name:        MetricPrefix + t4t7Latency.Name(),
 		Measure:     t4t7Latency,
 		Aggregation: view.Distribution(expDistribution...),
+		TagKeys:     []tag.Key{opNameTag},
 	}
 )
 
