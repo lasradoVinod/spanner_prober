@@ -25,23 +25,22 @@ import (
 )
 
 var (
-	enableStackDriverIntegration = flag.Bool("enable_stackdriver_integration", true, "Export traces and metrics to Stackdriver")
-	project                      = flag.String("project", "", "GCP project for Cloud Spanner.")
-	opsProject                   = flag.String("ops_project", "", "Cloud Operations project if differs from Spanner project.")
-	instance_name                = flag.String("instance", "test1", "Target instance")
-	database_name                = flag.String("database", "test1", "Target database")
-	instanceConfig               = flag.String("instance_config", "regional-us-central1", "Target instance config")
-	nodeCount                    = flag.Int("node_count", 1, "Node count for the prober. If specified, processing_units must be 0.")
-	processingUnits              = flag.Int("processing_units", 0, "Processing units for the prober. If specified, node_count must be 0.")
-	qps                          = flag.Float64("qps", 1, "QPS to probe per prober. If specified, qps_per_instance_config must be 0.")
-	qpsPerInstanceConfig         = flag.Float64("qps_per_instance_config", 0, "Total QPS to probe per instance config, which will be evenly distributed to all non-withness regions. If specified, qps must be 0.")
-	numRows                      = flag.Int("num_rows", 1000, "Number of rows in database to be probed")
-	probeType                    = flag.String("probe_type", "noop", "The probe type this prober will run")
-	maxStaleness                 = flag.Duration("max_staleness", 15*time.Second, "Maximum staleness for stale queries")
-	payloadSize                  = flag.Int("payload_size", 1024, "Size of payload to write to the probe database")
-	probeDeadline                = flag.Duration("probe_deadline", 60*time.Second, "Deadline for probe request")
-	endpoint                     = flag.String("endpoint", "", "Cloud Spanner Endpoint to send request to")
-	// globalResource               = flag.Bool("glabal_resource", true, "")
+	enableCloudOps       = flag.Bool("enable_cloud_ops", true, "Export metrics to Cloud Operations (former Stackdriver)")
+	project              = flag.String("project", "", "GCP project for Cloud Spanner.")
+	opsProject           = flag.String("ops_project", "", "Cloud Operations project if differs from Spanner project.")
+	instance_name        = flag.String("instance", "test1", "Target instance")
+	database_name        = flag.String("database", "test1", "Target database")
+	instanceConfig       = flag.String("instance_config", "regional-us-central1", "Target instance config")
+	nodeCount            = flag.Int("node_count", 1, "Node count for the prober. If specified, processing_units must be 0.")
+	processingUnits      = flag.Int("processing_units", 0, "Processing units for the prober. If specified, node_count must be 0.")
+	qps                  = flag.Float64("qps", 1, "QPS to probe per prober. If specified, qps_per_instance_config must be 0.")
+	qpsPerInstanceConfig = flag.Float64("qps_per_instance_config", 0, "Total QPS to probe per instance config, which will be evenly distributed to all non-withness regions. If specified, qps must be 0.")
+	numRows              = flag.Int("num_rows", 1000, "Number of rows in database to be probed")
+	probeType            = flag.String("probe_type", "noop", "The probe type this prober will run")
+	maxStaleness         = flag.Duration("max_staleness", 15*time.Second, "Maximum staleness for stale queries")
+	payloadSize          = flag.Int("payload_size", 1024, "Size of payload to write to the probe database")
+	probeDeadline        = flag.Duration("probe_deadline", 10*time.Second, "Deadline for probe request")
+	endpoint             = flag.String("endpoint", "", "Cloud Spanner Endpoint to send request to")
 )
 
 func main() {
@@ -60,7 +59,7 @@ func main() {
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, /* Discard logs at INFO level */
 		os.Stderr, os.Stderr))
 
-	if *enableStackDriverIntegration {
+	if *enableCloudOps {
 		// Set up the stackdriver exporter for sending metrics, views and traces
 
 		// Register gRPC views.
