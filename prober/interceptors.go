@@ -4,7 +4,6 @@ package prober
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
-	"go.opencensus.io/tag"
 
 	"google.golang.org/grpc"
 )
@@ -22,38 +20,28 @@ const gfeT4T7prefix = "gfet4t7; dur="
 const serverTimingKey = "server-timing"
 
 var (
-	hostname string
+	expDistribution = []float64{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288}
 	// T4T7Latency is a latency inside Google.
 	t4t7Latency = stats.Int64(
-		prefix+"t4t7_latency",
-		"GFE latency",
+		"t4t7_latency",
+		"gRPC-GCP Spanner prober GFE latency",
 		stats.UnitMilliseconds,
 	)
 
 	// T4T7LatencyView is a view of the last value of T4T7Latency.
 	t4t7LatencyView = &view.View{
+		Name:        MetricPrefix + t4t7Latency.Name(),
 		Measure:     t4t7Latency,
-		Aggregation: view.LastValue(),
-		TagKeys:     []tag.Key{tagHostname},
+		Aggregation: view.Distribution(expDistribution...),
 	}
 )
 
 func init() {
-	var err error
 	view.Register(t4t7LatencyView)
-	hostname, err = os.Hostname()
-	if err != nil {
-		hostname = "generic"
-	}
 }
 
 func recordLatency(ctx context.Context, latency time.Duration) {
-	ctxProber, err := tag.New(ctx, tag.Upsert(tagHostname, hostname))
-	if err != nil {
-		return
-	}
-
-	stats.Record(ctxProber, t4t7Latency.M(latency.Milliseconds()))
+	stats.Record(ctx, t4t7Latency.M(latency.Milliseconds()))
 }
 
 // parseT4T7Latency parse the headers and trailers for finding the gfet4t7 latency.

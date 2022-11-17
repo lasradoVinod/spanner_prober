@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"os"
 	"sync"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
@@ -54,33 +54,37 @@ var (
 	}
 	rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	tagHostname = tag.MustNewKey("hostname")
+	MetricPrefix = "grpc_gcp_spanner_prober/"
 
-	prefix = "spanner_prober/"
-	// RunLatency is a measure percieved latency by user.
-	rpcLatency = stats.Int64(
-		prefix+"run_latency",
-		"Latency for each call",
+	resultTag   = tag.MustNewKey("result")
+	withError   = tag.Insert(resultTag, "error")
+	withSuccess = tag.Insert(resultTag, "success")
+
+	// opLatency is a probe's operation latency.
+	opLatency = stats.Int64(
+		"op_latency",
+		"gRPC-GCP Spanner prober operation latency",
 		stats.UnitMilliseconds,
 	)
-	// RunLatencyView is a view of the last value of RunLatency.
-	rpcLatencyView = &view.View{
-		Measure:     rpcLatency,
-		Aggregation: view.LastValue(),
-		TagKeys:     []tag.Key{tagHostname},
+	// opLatencyView is a view of the distribution of opLatency.
+	opLatencyView = &view.View{
+		Name:        MetricPrefix + opLatency.Name(),
+		Measure:     opLatency,
+		Aggregation: view.Distribution(expDistribution...),
+		TagKeys:     []tag.Key{resultTag},
 	}
 
-	rpcErrors = stats.Int64(
-		prefix+"open_session_count",
-		"Count of RPCErrors",
+	opResults = stats.Int64(
+		"op_count",
+		"gRPC-GCP Spanner prober operation count",
 		stats.UnitDimensionless,
 	)
 
-	// RPCErrorsView is a view of the count of RPCErrors.
-	rpcErrorsView = &view.View{
-		Measure:     rpcErrors,
+	opResultsView = &view.View{
+		Name:        MetricPrefix + opResults.Name(),
+		Measure:     opResults,
 		Aggregation: view.Count(),
-		TagKeys:     []tag.Key{tagHostname},
+		TagKeys:     []tag.Key{resultTag},
 	}
 )
 
@@ -196,7 +200,7 @@ func (opt *ProberOptions) databaseName() string {
 }
 
 func init() {
-	view.Register(rpcLatencyView, rpcErrorsView)
+	view.Register(opLatencyView, opResultsView)
 }
 
 // New initializes Cloud Spanner clients, setup up the database, and return a new CSProber.
@@ -257,8 +261,12 @@ func newSpannerProber(ctx context.Context, opt ProberOptions, clientOpts ...opti
 		return nil, err
 	}
 
-	clientOpts = append(clientOpts, option.WithGRPCDialOption(grpc.WithUnaryInterceptor(AddGFELatencyUnaryInterceptor)),
-		option.WithGRPCDialOption(grpc.WithStreamInterceptor(AddGFELatencyStreamingInterceptor)))
+	clientOpts = append(
+		clientOpts,
+		option.WithGRPCDialOption(grpc.WithUnaryInterceptor(AddGFELatencyUnaryInterceptor)),
+		option.WithGRPCDialOption(grpc.WithStreamInterceptor(AddGFELatencyStreamingInterceptor)),
+		option.WithGRPCDialOption(grpc.WithStatsHandler(new(ocgrpc.ClientHandler))),
+	)
 	dataClient, err := spanner.NewClient(ctx, opt.databaseURI(), clientOpts...)
 	if err != nil {
 		return nil, err
@@ -416,24 +424,16 @@ func dropCloudSpannerDatabase(ctx context.Context, databaseClient *database.Data
 	return err
 }
 
-// backgroundStatsAggregator pulls stats from the prober channel, and places them in a slice.
+// backgroundStatsAggregator pulls stats from the prober channel.
 // This avoids the case in which probes are blocked due to the channel being full.
 func (p *Prober) backgroundStatsAggregator() error {
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "generic"
-	}
-	ctxProber, err := tag.New(context.Background(),
-		tag.Upsert(tagHostname, hostname))
-	if err != nil {
-		return err
-	}
-
 	for op := range p.opsChannel {
+		mutator := withSuccess
 		if op.Error != nil {
-			stats.Record(ctxProber, rpcErrors.M(1))
+			mutator = withError
 		}
-		stats.Record(ctxProber, rpcLatency.M(op.Latency.Milliseconds()))
+		stats.RecordWithTags(context.Background(), []tag.Mutator{mutator}, opResults.M(1))
+		stats.RecordWithTags(context.Background(), []tag.Mutator{mutator}, opLatency.M(op.Latency.Milliseconds()))
 	}
 
 	return nil
@@ -473,12 +473,12 @@ func (p *Prober) Start(ctx context.Context) {
 
 func (p *Prober) runProbe(ctx context.Context) {
 	startTime := time.Now()
-	rpcErr := p.prober.probe(ctx, p)
+	probeErr := p.prober.probe(ctx, p)
 	latency := time.Now().Sub(startTime)
 
 	p.opsChannel <- op{
 		Latency: latency,
-		Error:   rpcErr,
+		Error:   probeErr,
 	}
 }
 
