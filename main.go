@@ -16,6 +16,7 @@ import (
 
 	"cloud.google.com/go/spanner"
 	"contrib.go.opencensus.io/exporter/stackdriver"
+	"contrib.go.opencensus.io/exporter/stackdriver/monitoredresource"
 	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/stats/view"
 	"google.golang.org/grpc/grpclog"
@@ -109,11 +110,7 @@ func main() {
 			BundleDelayThreshold: 60 * time.Second,
 			BundleCountThreshold: 3000,
 			GetMetricPrefix:      getPrefix,
-			// GetMetricDisplayName: func(view *view.View) string {
-			// 	return getPrefix(view.Name) + view.Name
-			// },
-
-			// MonitoredResource:    &MonitoredResource{delegate: monitoredresource.Autodetect()},
+			MonitoredResource:    &MonitoredResource{delegate: monitoredresource.Autodetect()},
 		})
 
 		if err != nil {
@@ -132,25 +129,26 @@ func main() {
 	}
 }
 
-// type MonitoredResource struct {
-// 	monitoredresource.Interface
+type MonitoredResource struct {
+	monitoredresource.Interface
 
-// 	delegate monitoredresource.Interface
-// }
+	delegate monitoredresource.Interface
+}
 
-// func (mr *MonitoredResource) MonitoredResource() (resType string, labels map[string]string) {
-// 	dType, dLabels := mr.delegate.MonitoredResource()
-// 	resType = dType
-// 	labels = make(map[string]string)
-// 	for k, v := range dLabels {
-// 		if k == "project_id" {
-// 			labels[k] = *project
-// 			continue
-// 		}
-// 		labels[k] = v
-// 	}
-// 	return
-// }
+func (mr *MonitoredResource) MonitoredResource() (resType string, labels map[string]string) {
+	dType, dLabels := mr.delegate.MonitoredResource()
+	resType = dType
+	labels = make(map[string]string)
+	for k, v := range dLabels {
+		if k == "project_id" {
+			// Overwrite project id to satisfy Cloud Monitoring rule.
+			labels[k] = *project
+			continue
+		}
+		labels[k] = v
+	}
+	return
+}
 
 func parseProbeType(t string) (proberlib.Probe, error) {
 	switch t {
