@@ -19,6 +19,7 @@ import (
 	"contrib.go.opencensus.io/exporter/stackdriver/monitoredresource"
 	log "github.com/golang/glog"
 	"go.opencensus.io/plugin/ocgrpc"
+	"go.opencensus.io/resource"
 	"go.opencensus.io/stats/view"
 	"google.golang.org/grpc/grpclog"
 )
@@ -77,13 +78,16 @@ func main() {
 			}
 			return proberlib.MetricPrefix
 		}
-		sd, err := stackdriver.NewExporter(stackdriver.Options{
+		exporterOptions := stackdriver.Options{
 			ProjectID:            *project,
 			BundleDelayThreshold: 60 * time.Second,
 			BundleCountThreshold: 3000,
 			GetMetricPrefix:      getPrefix,
-			MonitoredResource:    &MonitoredResource{delegate: monitoredresource.Autodetect()},
-		})
+		}
+		if os.Getenv(resource.EnvVarType) == "" {
+			exporterOptions.MonitoredResource = &MonitoredResource{delegate: monitoredresource.Autodetect()}
+		}
+		sd, err := stackdriver.NewExporter(exporterOptions)
 
 		if err != nil {
 			log.Fatalf("Failed to create the StackDriver exporter: %v", err)
