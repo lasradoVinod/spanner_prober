@@ -26,7 +26,8 @@ import (
 
 var (
 	enableStackDriverIntegration = flag.Bool("enable_stackdriver_integration", true, "Export traces and metrics to Stackdriver")
-	project                      = flag.String("project", "", "Target project")
+	project                      = flag.String("project", "", "GCP project for Cloud Spanner.")
+	opsProject                   = flag.String("ops_project", "", "Cloud Operations project if differs from Spanner project.")
 	instance_name                = flag.String("instance", "test1", "Target instance")
 	database_name                = flag.String("database", "test1", "Target database")
 	instanceConfig               = flag.String("instance_config", "regional-us-central1", "Target instance config")
@@ -83,6 +84,9 @@ func main() {
 			BundleDelayThreshold: 60 * time.Second,
 			BundleCountThreshold: 3000,
 			GetMetricPrefix:      getPrefix,
+		}
+		if *opsProject != "" {
+			exporterOptions.ProjectID = *opsProject
 		}
 		if os.Getenv(resource.EnvVarType) == "" {
 			exporterOptions.MonitoredResource = &MonitoredResource{delegate: monitoredresource.Autodetect()}
@@ -147,6 +151,9 @@ func (mr *MonitoredResource) MonitoredResource() (resType string, labels map[str
 		if k == "project_id" {
 			// Overwrite project id to satisfy Cloud Monitoring rule.
 			labels[k] = *project
+			if *opsProject != "" {
+				labels[k] = *opsProject
+			}
 			continue
 		}
 		labels[k] = v
