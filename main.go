@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +16,9 @@ import (
 
 	"cloud.google.com/go/spanner"
 	"contrib.go.opencensus.io/exporter/stackdriver"
+	"contrib.go.opencensus.io/exporter/stackdriver/monitoredresource"
+	"go.opencensus.io/plugin/ocgrpc"
+	"go.opencensus.io/stats/view"
 	"google.golang.org/grpc/grpclog"
 
 	log "github.com/golang/glog"
@@ -89,11 +93,24 @@ func main() {
 
 	if *enableStackDriverIntegration {
 		// Set up the stackdriver exporter for sending metrics, views and traces
+
+		// Register gRPC views.
+		if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
+			log.Fatalf("Failed to register ocgrpc client views: %v", err)
+		}
+
+		getPrefix := func(name string) string {
+			if strings.HasPrefix(name, proberlib.MetricPrefix) {
+				return ""
+			}
+			return proberlib.MetricPrefix
+		}
 		sd, err := stackdriver.NewExporter(stackdriver.Options{
 			ProjectID:            *project,
 			BundleDelayThreshold: 60 * time.Second,
 			BundleCountThreshold: 3000,
-			MetricPrefix:         "spanner_prober",
+			GetMetricPrefix:      getPrefix,
+			MonitoredResource:    &MonitoredResource{delegate: monitoredresource.Autodetect()},
 		})
 
 		if err != nil {
@@ -110,6 +127,27 @@ func main() {
 	select {
 	case <-cancelChan:
 	}
+}
+
+type MonitoredResource struct {
+	monitoredresource.Interface
+
+	delegate monitoredresource.Interface
+}
+
+func (mr *MonitoredResource) MonitoredResource() (resType string, labels map[string]string) {
+	dType, dLabels := mr.delegate.MonitoredResource()
+	resType = dType
+	labels = make(map[string]string)
+	for k, v := range dLabels {
+		if k == "project_id" {
+			// Overwrite project id to satisfy Cloud Monitoring rule.
+			labels[k] = *project
+			continue
+		}
+		labels[k] = v
+	}
+	return
 }
 
 func parseProbeType(t string) (proberlib.Probe, error) {
