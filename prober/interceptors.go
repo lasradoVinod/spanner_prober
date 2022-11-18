@@ -1,4 +1,4 @@
-// Package interceptors creates interceptors for requests to Cloud Spanner APIs.
+// Package prober defines a Cloud Spanner prober with interceptors.
 package prober
 
 import (
@@ -8,13 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/metadata"
-
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
-
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 const gfeT4T7prefix = "gfet4t7; dur="
@@ -22,19 +20,20 @@ const serverTimingKey = "server-timing"
 
 var (
 	expDistribution = []float64{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288}
-	// T4T7Latency is a latency inside Google.
+
+	methodTag  = tag.MustNewKey("grpc_client_method")
+	rpcTypeTag = tag.MustNewKey("rpc_type")
+
 	t4t7Latency = stats.Int64(
 		"t4t7_latency",
 		"gRPC-GCP Spanner prober GFE latency",
 		stats.UnitMilliseconds,
 	)
-
-	// T4T7LatencyView is a view of the last value of T4T7Latency.
 	t4t7LatencyView = &view.View{
 		Name:        MetricPrefix + t4t7Latency.Name(),
 		Measure:     t4t7Latency,
 		Aggregation: view.Distribution(expDistribution...),
-		TagKeys:     []tag.Key{opNameTag},
+		TagKeys:     []tag.Key{opNameTag, methodTag, rpcTypeTag},
 	}
 )
 
@@ -42,8 +41,12 @@ func init() {
 	view.Register(t4t7LatencyView)
 }
 
-func recordLatency(ctx context.Context, latency time.Duration) {
-	stats.Record(ctx, t4t7Latency.M(latency.Milliseconds()))
+func recordLatency(ctx context.Context, method string, latency time.Duration) {
+	stats.RecordWithTags(
+		ctx,
+		[]tag.Mutator{tag.Insert(methodTag, method)},
+		t4t7Latency.M(latency.Milliseconds()),
+	)
 }
 
 // parseT4T7Latency parse the headers and trailers for finding the gfet4t7 latency.
@@ -82,22 +85,17 @@ func AddGFELatencyUnaryInterceptor(ctx context.Context, method string, req, repl
 		return err
 	}
 
-	gfeLatency, err := parseT4T7Latency(headers, trailers)
-	if err == nil {
-		recordLatency(ctx, gfeLatency)
+	if gfeLatency, err := parseT4T7Latency(headers, trailers); err == nil {
+		if ctx, err := tag.New(ctx, tag.Insert(rpcTypeTag, "unary")); err == nil {
+			recordLatency(ctx, method, gfeLatency)
+		}
 	}
-
 	return nil
 }
 
 // AddGFELatencyStreamingInterceptor intercepts streaming requests StreamingSQL and annotates GFE latency.
 func AddGFELatencyStreamingInterceptor(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-	var headers, trailers metadata.MD
-	opts = append(opts, grpc.Header(&headers))
-	opts = append(opts, grpc.Trailer(&trailers))
-
 	cs, err := streamer(ctx, desc, cc, method, opts...)
-
 	if err != nil {
 		return cs, err
 	}
@@ -105,16 +103,15 @@ func AddGFELatencyStreamingInterceptor(ctx context.Context, desc *grpc.StreamDes
 	go func() {
 		headers, err := cs.Header()
 		if err != nil {
-			fmt.Println("header error")
 			return
 		}
 		trailers := cs.Trailer()
-		gfeLatency, err := parseT4T7Latency(headers, trailers)
-		if err == nil {
-			recordLatency(ctx, gfeLatency)
+		if gfeLatency, err := parseT4T7Latency(headers, trailers); err == nil {
+			if ctx, err := tag.New(ctx, tag.Insert(rpcTypeTag, "streaming")); err == nil {
+				recordLatency(ctx, method, gfeLatency)
+			}
 		}
 	}()
 
 	return cs, nil
-
 }

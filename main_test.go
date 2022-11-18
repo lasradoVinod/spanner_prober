@@ -56,7 +56,7 @@ func TestValidFlags(t *testing.T) {
 			numRows:        0,
 			probeType:      "notaprobe",
 			payloadSize:    -1,
-			expectedErrors: 8,
+			expectedErrors: 7,
 		},
 	}
 
@@ -101,7 +101,7 @@ func TestParseProbeType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseProbeType(tt.flag)
+			result, err := proberlib.ParseProbeType(tt.flag)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseProbeType(%q) = error %v, wantErr %t", tt.flag, err, tt.wantErr)
