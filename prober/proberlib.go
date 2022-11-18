@@ -11,26 +11,21 @@ import (
 	"sync"
 	"time"
 
+	"cloud.google.com/go/spanner"
+	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
 	log "github.com/golang/glog"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
-	"google.golang.org/api/iterator"
-	"google.golang.org/api/option"
-	"google.golang.org/api/option/internaloption"
-
-	"google.golang.org/grpc"
-
 	"go.opencensus.io/plugin/ocgrpc"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+	"google.golang.org/api/option/internaloption"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
-	database "cloud.google.com/go/spanner/admin/database/apiv1"
-	instance "cloud.google.com/go/spanner/admin/instance/apiv1"
-
-	"cloud.google.com/go/spanner"
 	dbadminpb "google.golang.org/genproto/googleapis/spanner/admin/database/v1"
 	instancepb "google.golang.org/genproto/googleapis/spanner/admin/instance/v1"
 )
@@ -52,7 +47,6 @@ var (
 		}
 		return payload, h.Sum(nil), nil
 	}
-	rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	MetricPrefix = "grpc_gcp_spanner_prober/"
 
@@ -62,13 +56,11 @@ var (
 	withError   = tag.Insert(resultTag, "error")
 	withSuccess = tag.Insert(resultTag, "success")
 
-	// opLatency is a probe's operation latency.
 	opLatency = stats.Int64(
 		"op_latency",
 		"gRPC-GCP Spanner prober operation latency",
 		stats.UnitMilliseconds,
 	)
-	// opLatencyView is a view of the distribution of opLatency.
 	opLatencyView = &view.View{
 		Name:        MetricPrefix + opLatency.Name(),
 		Measure:     opLatency,
@@ -81,7 +73,6 @@ var (
 		"gRPC-GCP Spanner prober operation count",
 		stats.UnitDimensionless,
 	)
-
 	opResultsView = &view.View{
 		Name:        MetricPrefix + opResults.Name(),
 		Measure:     opResults,
@@ -101,9 +92,6 @@ type ProberOptions struct {
 
 	// QPS rate to probe at.
 	QPS float64
-
-	// QPS per instance config to probe at. The QPS will be evenly distributed across all non-witness regions.
-	QPSPerInstanceConfig float64
 
 	// NumRows is the number of rows in which which the prober randomly chooses to probe.
 	NumRows int
@@ -244,16 +232,6 @@ func newSpannerProber(ctx context.Context, opt ProberOptions, clientOpts ...opti
 		return nil, err
 	}
 
-	instanceConfig, err := instanceClient.GetInstanceConfig(ctx, &instancepb.GetInstanceConfigRequest{
-		Name: opt.instanceConfigURI(),
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	proberQPS := qpsPerProber(opt.QPS, opt.QPSPerInstanceConfig, instanceConfig.GetReplicas())
-
 	if err := createCloudSpannerInstanceIfMissing(ctx, instanceClient, opt); err != nil {
 		return nil, err
 	}
@@ -284,7 +262,7 @@ func newSpannerProber(ctx context.Context, opt ProberOptions, clientOpts ...opti
 		deadline:            time.Duration(opt.ProbeDeadline),
 		opsChannel:          make(chan op, aggregationChannelSize),
 		numRows:             opt.NumRows,
-		qps:                 proberQPS,
+		qps:                 opt.QPS,
 		prober:              opt.Prober,
 		maxStaleness:        opt.MaxStaleness,
 		payloadSize:         opt.PayloadSize,
@@ -295,24 +273,6 @@ func newSpannerProber(ctx context.Context, opt ProberOptions, clientOpts ...opti
 	}
 
 	return p, nil
-}
-
-// qpsPerProber calculates the qps that each individual prober should be probing at.
-func qpsPerProber(qps float64, qpsPerInstanceConfig float64, instanceConfigReplicas []*instancepb.ReplicaInfo) float64 {
-	// for non existent probe
-	if qps == 0 && qpsPerInstanceConfig == 0 {
-		return 0
-	}
-	if qps > 0 {
-		return qps
-	}
-	regions := make(map[string]struct{})
-	for _, replicaInfo := range instanceConfigReplicas {
-		if replicaInfo.GetType() != instancepb.ReplicaInfo_WITNESS {
-			regions[replicaInfo.GetLocation()] = struct{}{}
-		}
-	}
-	return qpsPerInstanceConfig / float64(len(regions))
 }
 
 func backoff(baseDelay, maxDelay time.Duration, retries int) time.Duration {

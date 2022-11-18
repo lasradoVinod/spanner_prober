@@ -56,7 +56,7 @@ func TestValidFlags(t *testing.T) {
 			numRows:        0,
 			probeType:      "notaprobe",
 			payloadSize:    -1,
-			expectedErrors: 8,
+			expectedErrors: 7,
 		},
 	}
 

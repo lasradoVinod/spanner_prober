@@ -25,22 +25,21 @@ import (
 )
 
 var (
-	enableCloudOps       = flag.Bool("enable_cloud_ops", true, "Export metrics to Cloud Operations (former Stackdriver)")
-	project              = flag.String("project", "", "GCP project for Cloud Spanner.")
-	opsProject           = flag.String("ops_project", "", "Cloud Operations project if differs from Spanner project.")
-	instance_name        = flag.String("instance", "test1", "Target instance")
-	database_name        = flag.String("database", "test1", "Target database")
-	instanceConfig       = flag.String("instance_config", "regional-us-central1", "Target instance config")
-	nodeCount            = flag.Int("node_count", 1, "Node count for the prober. If specified, processing_units must be 0.")
-	processingUnits      = flag.Int("processing_units", 0, "Processing units for the prober. If specified, node_count must be 0.")
-	qps                  = flag.Float64("qps", 1, "QPS to probe per prober. If specified, qps_per_instance_config must be 0.")
-	qpsPerInstanceConfig = flag.Float64("qps_per_instance_config", 0, "Total QPS to probe per instance config, which will be evenly distributed to all non-withness regions. If specified, qps must be 0.")
-	numRows              = flag.Int("num_rows", 1000, "Number of rows in database to be probed")
-	probeType            = flag.String("probe_type", "noop", "The probe type this prober will run")
-	maxStaleness         = flag.Duration("max_staleness", 15*time.Second, "Maximum staleness for stale queries")
-	payloadSize          = flag.Int("payload_size", 1024, "Size of payload to write to the probe database")
-	probeDeadline        = flag.Duration("probe_deadline", 10*time.Second, "Deadline for probe request")
-	endpoint             = flag.String("endpoint", "", "Cloud Spanner Endpoint to send request to")
+	enableCloudOps  = flag.Bool("enable_cloud_ops", true, "Export metrics to Cloud Operations (former Stackdriver)")
+	project         = flag.String("project", "", "GCP project for Cloud Spanner.")
+	opsProject      = flag.String("ops_project", "", "Cloud Operations project if differs from Spanner project.")
+	instance_name   = flag.String("instance", "test1", "Target instance")
+	database_name   = flag.String("database", "test1", "Target database")
+	instanceConfig  = flag.String("instance_config", "regional-us-central1", "Target instance config")
+	nodeCount       = flag.Int("node_count", 1, "Node count for the prober. If specified, processing_units must be 0.")
+	processingUnits = flag.Int("processing_units", 0, "Processing units for the prober. If specified, node_count must be 0.")
+	qps             = flag.Float64("qps", 1, "QPS to probe per prober [1, 1000].")
+	numRows         = flag.Int("num_rows", 1000, "Number of rows in database to be probed")
+	probeType       = flag.String("probe_type", "noop", "The probe type this prober will run")
+	maxStaleness    = flag.Duration("max_staleness", 15*time.Second, "Maximum staleness for stale queries")
+	payloadSize     = flag.Int("payload_size", 1024, "Size of payload to write to the probe database")
+	probeDeadline   = flag.Duration("probe_deadline", 10*time.Second, "Deadline for probe request")
+	endpoint        = flag.String("endpoint", "", "Cloud Spanner Endpoint to send request to")
 )
 
 func main() {
@@ -60,14 +59,14 @@ func main() {
 		os.Stderr, os.Stderr))
 
 	if *enableCloudOps {
-		// Set up the stackdriver exporter for sending metrics, views and traces
+		// Set up the stackdriver exporter for sending metrics.
 
 		// Register gRPC views.
 		if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
 			log.Fatalf("Failed to register ocgrpc client views: %v", err)
 		}
 
-		// Enable all default views for Cloud Spanner
+		// Enable all default views for Cloud Spanner.
 		if err := spanner.EnableStatViews(); err != nil {
 			log.Errorf("Failed to export stats view: %v", err)
 		}
@@ -106,20 +105,19 @@ func main() {
 	}
 
 	opts := proberlib.ProberOptions{
-		Project:              *project,
-		Instance:             *instance_name,
-		Database:             *database_name,
-		InstanceConfig:       *instanceConfig,
-		QPS:                  *qps,
-		QPSPerInstanceConfig: *qpsPerInstanceConfig,
-		NumRows:              *numRows,
-		Prober:               prober,
-		MaxStaleness:         *maxStaleness,
-		PayloadSize:          *payloadSize,
-		ProbeDeadline:        *probeDeadline,
-		Endpoint:             *endpoint,
-		NodeCount:            *nodeCount,
-		ProcessingUnits:      *processingUnits,
+		Project:         *project,
+		Instance:        *instance_name,
+		Database:        *database_name,
+		InstanceConfig:  *instanceConfig,
+		QPS:             *qps,
+		NumRows:         *numRows,
+		Prober:          prober,
+		MaxStaleness:    *maxStaleness,
+		PayloadSize:     *payloadSize,
+		ProbeDeadline:   *probeDeadline,
+		Endpoint:        *endpoint,
+		NodeCount:       *nodeCount,
+		ProcessingUnits: *processingUnits,
 	}
 
 	p, err := proberlib.NewProber(ctx, opts)
@@ -172,20 +170,9 @@ func validateFlags() []error {
 		return []error{err}
 	}
 
-	if *qps <= 0 && *qpsPerInstanceConfig <= 0 {
-		errs = append(errs, fmt.Errorf("At least one of qps or qps_per_instance_config must be greater than 0, got qps: %v, qps_per_instance_config: %v", *qps, *qpsPerInstanceConfig))
-	}
-
-	if *qps > 0 && *qpsPerInstanceConfig > 0 {
-		errs = append(errs, fmt.Errorf("At most one of qps or qps_per_instance_config may be specified, got qps: %v, qps_per_instance_config: %v", *qps, *qpsPerInstanceConfig))
-	}
-
 	// We limit qps to < 1000 to ensure we don't overload Spanner accidentally.
 	if *qps > 1000 {
 		errs = append(errs, fmt.Errorf("qps must be 1 < qps < 1000, was %v", *qps))
-	}
-	if *qpsPerInstanceConfig > 1000 {
-		errs = append(errs, fmt.Errorf("qps_per_instance_config must be 1 < qps_per_instance_config < 1000, was %v", *qpsPerInstanceConfig))
 	}
 
 	if *numRows <= 0 {
