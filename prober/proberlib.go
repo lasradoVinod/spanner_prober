@@ -21,7 +21,6 @@ import (
 	"go.opencensus.io/tag"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-	"google.golang.org/api/option/internaloption"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -105,9 +104,6 @@ type ProberOptions struct {
 	// PayloadSize is the number of bytes of random data used as a Payload.
 	PayloadSize int
 
-	// GCE zone where the prober will be running, borg cell equivalent
-	GCEZone string
-
 	// ProbeDeadline is the deadline for request for probes.
 	ProbeDeadline time.Duration
 
@@ -128,7 +124,6 @@ type Prober struct {
 	deadline            time.Duration
 	mu                  *sync.Mutex
 	opsChannel          chan op
-	ops                 []op
 	numRows             int
 	qps                 float64
 	prober              Probe
@@ -136,8 +131,6 @@ type Prober struct {
 	payloadSize         int
 	generatePayload     func(int) ([]byte, []byte, error)
 	opt                 ProberOptions
-	allowedPeerRanges   []string
-	deniedPeerRanges    []string
 	// add clientOptions here as it contains credentials.
 	clientOpts []option.ClientOption
 }
@@ -203,7 +196,6 @@ func NewProber(ctx context.Context, opt ProberOptions, clientOpts ...option.Clie
 	if opt.Endpoint != "" {
 		clientOpts = append(clientOpts, option.WithEndpoint(opt.Endpoint))
 	}
-	clientOpts = append(clientOpts, internaloption.EnableDirectPath(false))
 	p, err := newSpannerProber(ctx, opt, clientOpts...)
 	if err != nil {
 		return nil, err
@@ -291,7 +283,7 @@ func backoff(baseDelay, maxDelay time.Duration, retries int) time.Duration {
 // Instances are shared across multiple prober tasks running in differenct GCE VMs.
 // Instances do not get cleaned up in this prober, as we do not support turning down Cloud Spanner regions.
 func createCloudSpannerInstanceIfMissing(ctx context.Context, instanceClient *instance.InstanceAdminClient, opt ProberOptions) error {
-	// skip instance creation requests if the instance already exists
+	// Skip instance creation requests if the instance already exists.
 	if checkInstancePresence(ctx, instanceClient, opt) {
 		return nil
 	}
@@ -308,7 +300,7 @@ func createCloudSpannerInstanceIfMissing(ctx context.Context, instanceClient *in
 		},
 	})
 
-	// If instance create operations fails, check if the instance was already created. If no, return error
+	// If instance create operations fails, check if the instance was already created. If no, return error.
 	if err != nil {
 		if status.Code(err) != codes.AlreadyExists {
 			return err
@@ -317,7 +309,7 @@ func createCloudSpannerInstanceIfMissing(ctx context.Context, instanceClient *in
 		return err
 	}
 
-	// Wait for instance to be ready
+	// Wait for instance to be ready.
 	var retries int
 	for {
 		var resp *instancepb.Instance
@@ -341,20 +333,11 @@ func checkInstancePresence(ctx context.Context, instanceClient *instance.Instanc
 	resp, err := instanceClient.GetInstance(ctx, &instancepb.GetInstanceRequest{
 		Name: opt.instanceURI(),
 	})
-	// if instance is not present or instance is not ready
+	// If instance is not present or instance is not ready.
 	if err != nil || resp.State != instancepb.Instance_READY {
 		return false
 	}
 	return true
-}
-
-// deleteCloudSpannerInstance deletes the instance present in ProberOptions.
-func deleteCloudSpannerInstance(ctx context.Context, instanceClient *instance.InstanceAdminClient, opt ProberOptions) error {
-	err := instanceClient.DeleteInstance(ctx, &instancepb.DeleteInstanceRequest{
-		Name: opt.instanceURI(),
-	})
-
-	return err
 }
 
 // createCloudSpannerDatabase creates a prober "Database" on an "Instance" of Cloud Spanner in the specificed project.
@@ -384,12 +367,6 @@ func createCloudSpannerDatabase(ctx context.Context, databaseClient *database.Da
 	return err
 }
 
-// dropCloudSpannerDatabase deops the database mentioned in ProberOptions.
-func dropCloudSpannerDatabase(ctx context.Context, databaseClient *database.DatabaseAdminClient, opt ProberOptions) error {
-	err := databaseClient.DropDatabase(ctx, &dbadminpb.DropDatabaseRequest{Database: opt.databaseURI()})
-	return err
-}
-
 // backgroundStatsAggregator pulls stats from the prober channel.
 // This avoids the case in which probes are blocked due to the channel being full.
 func (p *Prober) backgroundStatsAggregator(ctx context.Context) error {
@@ -406,13 +383,10 @@ func (p *Prober) backgroundStatsAggregator(ctx context.Context) error {
 }
 
 func (p *Prober) probeInterval() time.Duration {
-	// qps must be > 0 as we validate this when constructing a CSProber
+	// qps must be > 0 as we validate this when constructing a CSProber.
 	// qps is converted to a duration for type reasons, however it does not represent a value duration.
 	// Use granularity of nanosecond to support float division. Useful for supporting probes with QPS < 1.
-	// convert the interval to nanosecond
-	probeIntervalNanoSeconds := int(1e9 / p.qps)
-	// convert to time.Duration
-	return time.Duration(probeIntervalNanoSeconds) * time.Nanosecond
+	return time.Duration(float64(time.Second) / p.qps)
 }
 
 // Start starts the prober. This will run a goroutinue until ctx is canceled.
