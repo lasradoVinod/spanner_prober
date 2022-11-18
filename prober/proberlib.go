@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	aggregationChannelSize = 100
+	aggregationChannelSize = 1000
 	// Long running operations retry parameters.
 	baseLRORetryDelay = 200 * time.Millisecond
 	maxLRORetryDelay  = 5 * time.Second
