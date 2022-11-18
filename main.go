@@ -171,8 +171,8 @@ func validateFlags() []error {
 	}
 
 	// We limit qps to < 1000 to ensure we don't overload Spanner accidentally.
-	if *qps > 1000 {
-		errs = append(errs, fmt.Errorf("qps must be 1 < qps < 1000, was %v", *qps))
+	if *qps <= 0 || *qps > 1000 {
+		errs = append(errs, fmt.Errorf("qps must be 1 <= qps <= 1000, was %v", *qps))
 	}
 
 	if *numRows <= 0 {
@@ -185,6 +185,10 @@ func validateFlags() []error {
 
 	if matched := projectRegex.MatchString(*project); !matched {
 		errs = append(errs, fmt.Errorf("project did not match %v, was %v", projectRegex, *project))
+	}
+
+	if matched := projectRegex.MatchString(*opsProject); !matched {
+		errs = append(errs, fmt.Errorf("ops_project did not match %v, was %v", projectRegex, *opsProject))
 	}
 
 	if matched := instanceDBRegex.MatchString(*instance_name); !matched {
